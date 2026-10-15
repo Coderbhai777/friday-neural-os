@@ -351,10 +351,20 @@ class Assistant:
             res = await tool(context, **args) if "context" in str(tool.__code__.co_varnames) else await tool(**args)
             return str(res)
 
-        # 🔹 UNIFIED AI CLIENT GENERATION (Groq / Gemini Failover)
-        import friday_tools.ai_client as ai_client
-        reply = ai_client.generate_ai_response(message)
-        return reply
+        # 🔹 UNIFIED BOUNDED STREAMING AI CLIENT (Groq / Gemini Failover)
+        try:
+            import friday_tools.ai_client as ai_client
+            print("\n🤖 ULTRON: ", end="", flush=True)
+            reply = await ai_client.generate_ai_response_stream(
+                prompt=message,
+                on_delta=lambda d: print(d, end="", flush=True)
+            )
+            print("\n")
+            return reply
+        except Exception:
+            import friday_tools.ai_client as ai_client
+            reply = ai_client.generate_ai_response(message)
+            return reply
 
 
 # ==============================
@@ -362,6 +372,13 @@ class Assistant:
 # ==============================
 async def main_async():
     print("🚀 Initializing JARVIS Tactical AI System...")
+
+    # 🔹 LOG RUNTIME IDENTITY TO PREVENT GHOST PROCESS DESYNC
+    try:
+        from friday_tools.runtime_diagnostics import log_runtime_identity
+        log_runtime_identity("JARVIS_Main")
+    except Exception:
+        pass
     
     # 🔹 START BACKGROUND WORKERS
     asyncio.create_task(reminder_worker())
@@ -389,8 +406,7 @@ async def main_async():
         import friday_tools.tts_engine as tts_engine
         greeting = "JARVIS tactical neural systems online. All protocols operational and at your command, Sir."
         print(f"🤖 JARVIS: {greeting}")
-        import threading
-        threading.Thread(target=tts_engine.speak_text_sync, args=(greeting,), daemon=True).start()
+        tts_engine.speak_text_sync(greeting)
     except Exception as e:
         print(f"⚠️ Greeting notice: {e}")
 
@@ -406,15 +422,7 @@ async def main_async():
                 print("👋 Powering down ULTRON...")
                 break
 
-            response = await assistant.on_user_message(context, user_input)
-            print(f"\n🤖 ULTRON: {response}\n")
-
-            try:
-                import friday_tools.tts_engine as tts_engine
-                import threading
-                threading.Thread(target=tts_engine.speak_text_sync, args=(response,), daemon=True).start()
-            except Exception:
-                pass
+            await assistant.on_user_message(context, user_input)
 
         except (KeyboardInterrupt, EOFError):
             break
