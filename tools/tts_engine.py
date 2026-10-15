@@ -1,13 +1,11 @@
 """
-ULTRON Neural TTS Engine
-Voice: en-GB-RyanNeural (British English, Male) - JARVIS / Ultron Baritone
-Pitch: -5Hz | Rate: +0% | Sampling: 24,000 Hz (24 kHz) | Audio: MP3 Mono 48 kbps
+JARVIS Neural Voice & Speech Engine
+Default Voice: Google Charon (Deep, Authoritative AI Voice) / Edge-TTS RyanNeural Fallback
 Features:
 - Instant barge-in interruption (stop_speech)
-- Automatic length sanitization (prevents TTS hangs on huge documents/patent drafts)
+- Multi-lingual & Hinglish speech support
 - 30-second hard playback safety cap
-- Synthesis network timeout protection (8s)
-- Lock-free playback loop to prevent thread deadlocks
+- Dynamic Google Gemini Charon TTS + Edge Neural fallback
 """
 
 import os
@@ -15,6 +13,7 @@ import io
 import re
 import sys
 import time
+import wave
 import asyncio
 import tempfile
 import threading
@@ -23,10 +22,22 @@ from typing import Optional
 from dotenv import load_dotenv
 
 # Ensure .env is loaded
-load_dotenv(Path.home() / "Documents" / "ULTRON_Data" / ".env")
+for env_p in [
+    Path.home() / "Documents" / "ULTRON_Data" / ".env",
+    Path.home() / "Documents" / "JARVIS_Data" / ".env",
+    Path.home() / ".env",
+]:
+    if env_p.exists():
+        load_dotenv(env_p)
 
-DEFAULT_VOICE = "en-GB-RyanNeural"
-DEFAULT_PITCH = "-5Hz"
+DEFAULT_VOICE = os.getenv("VOICE_NAME", "Charon")
+if os.getenv("ASSISTANT_NAME", "").lower() == "simran":
+    FALLBACK_EDGE_VOICE = "en-IN-NeerjaNeural"
+    DEFAULT_VOICE = "Aoede"
+else:
+    FALLBACK_EDGE_VOICE = "en-GB-RyanNeural"
+    DEFAULT_VOICE = os.getenv("VOICE_NAME", "Charon")
+DEFAULT_PITCH = "+0Hz"
 DEFAULT_RATE = "+0%"
 DEFAULT_VOLUME = "+0%"
 
@@ -81,10 +92,8 @@ def _clean_text_for_speech(text: str) -> str:
     if not cleaned:
         return ""
 
-    # For massive texts (like patent drafts, essays, long technical reports)
-    # limit voice output to the first 2 meaningful sentences or ~250 chars
     if len(cleaned) > 280:
-        sentences = re.split(r'(?<=[.!?])\s+', cleaned)
+        sentences = re.split(r'(?<=[.!?।])\s+', cleaned)
         spoken_summary = []
         cur_len = 0
         for s in sentences:
@@ -102,10 +111,75 @@ def _clean_text_for_speech(text: str) -> str:
         else:
             cleaned = cleaned[:250].rsplit(' ', 1)[0] + "."
 
-        if not cleaned.endswith((".", "!", "?")):
+        if not cleaned.endswith((".", "!", "?", "।")):
             cleaned += "."
 
     return cleaned
+
+
+def _synthesize_charon_gemini(text: str, output_wav: str) -> bool:
+    """Synthesizes voice using Google Gemini TTS API with Charon voice."""
+    try:
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            return False
+
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-preview-tts",
+            contents=text,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name=DEFAULT_VOICE
+                        )
+                    )
+                )
+            )
+        )
+
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                data = part.inline_data.data
+                with wave.open(output_wav, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(24000)
+                    wf.writeframes(data)
+                return True
+        return False
+    except Exception as e:
+        return False
+
+
+def _synthesize_edge_fallback(text: str, output_mp3: str, voice: str = FALLBACK_EDGE_VOICE) -> bool:
+    """Synthesizes speech using Edge-TTS as fallback."""
+    try:
+        import edge_tts
+
+        async def _run():
+            comm = edge_tts.Communicate(
+                text=text,
+                voice=voice,
+                rate=DEFAULT_RATE,
+                pitch=DEFAULT_PITCH,
+            )
+            await comm.save(output_mp3)
+
+        try:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(asyncio.wait_for(_run(), timeout=8.0))
+            loop.close()
+            return os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 0
+        except Exception:
+            return False
+    except Exception:
+        return False
 
 
 def speak_text_sync(
@@ -116,7 +190,7 @@ def speak_text_sync(
     volume: str = DEFAULT_VOLUME,
 ) -> str:
     """
-    Synchronously speaks text aloud using Edge Neural TTS with exact RyanNeural parameters.
+    Synchronously speaks text aloud using Google Charon voice (with Edge-TTS fallback).
     Guaranteed thread-safe, non-deadlocking, and barge-in responsive.
     """
     global _is_speaking, _stop_requested
@@ -130,32 +204,24 @@ def speak_text_sync(
 
     tmp_path = ""
     try:
-        import edge_tts
         import pygame
 
-        async def _synthesize():
-            communicate = edge_tts.Communicate(
-                text=cleaned,
-                voice=voice,
-                rate=rate,
-                pitch=pitch,
-                volume=volume,
-            )
-            nonlocal tmp_path
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-                tmp_path = tmp.name
-            await asyncio.wait_for(communicate.save(tmp_path), timeout=8.0)
+        # 1. Primary: Try Google Charon voice
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
 
-        # Run synthesis with strict timeout
-        try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(_synthesize())
-            loop.close()
-        except Exception:
-            try:
-                asyncio.run(asyncio.wait_for(_synthesize(), timeout=8.0))
-            except Exception as se:
-                return f"TTS Synthesis note: {se}"
+        success = _synthesize_charon_gemini(cleaned, tmp_path)
+
+        # 2. Fallback to Edge Neural voice if Gemini offline
+        if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_fb:
+                tmp_path = tmp_fb.name
+            _synthesize_edge_fallback(cleaned, tmp_path, FALLBACK_EDGE_VOICE)
 
         if not tmp_path or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
             return "Failed to synthesize speech audio file."
@@ -170,10 +236,10 @@ def speak_text_sync(
             pygame.mixer.music.load(tmp_path)
             pygame.mixer.music.play()
 
-        # Playback loop runs outside the lock with 30s safety timeout to prevent deadlocks
+        # Playback loop with 30s safety cap
         start_time = time.time()
         while pygame.mixer.music.get_busy() and not _stop_requested:
-            if time.time() - start_time > 30.0:  # 30-second hard safety timeout
+            if time.time() - start_time > 30.0:
                 pygame.mixer.music.stop()
                 break
             time.sleep(0.05)
@@ -191,7 +257,7 @@ def speak_text_sync(
             pass
 
         _is_speaking = False
-        return f"[Edge-TTS RyanNeural] Spoke: '{cleaned[:80]}...'"
+        return f"[JARVIS Charon Voice] Spoke: '{cleaned[:80]}...'"
 
     except Exception as e:
         _is_speaking = False
@@ -212,15 +278,11 @@ async def speak_text(
     pitch: str = DEFAULT_PITCH,
     volume: str = DEFAULT_VOLUME,
 ) -> str:
-    """
-    Speaks text aloud using Edge Neural TTS with exact RyanNeural parameters.
-    Supports real-time barge-in interruption.
-    """
+    """Speaks text aloud using JARVIS Charon voice with barge-in interruption."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, speak_text_sync, text, voice, rate, pitch, volume)
 
 
-# Convenient alias
 speak = speak_text_sync
 
 
@@ -228,41 +290,25 @@ async def generate_speech_audio(
     text: str,
     output_path: str = "",
     voice: str = DEFAULT_VOICE,
-    rate: str = DEFAULT_RATE,
-    pitch: str = DEFAULT_PITCH,
 ) -> str:
-    """Generates a high-fidelity MP3 neural voice file from text."""
+    """Generates a high-fidelity audio voice file from text using Charon voice."""
     if not output_path:
         out_dir = Path.home() / "Documents" / "ULTRON_Data" / "Voice_Recordings"
         out_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(out_dir / f"speech_{int(time.time())}.mp3")
+        output_path = str(out_dir / f"jarvis_speech_{int(time.time())}.wav")
 
     cleaned = _clean_text_for_speech(text)
-    try:
-        import edge_tts
-        communicate = edge_tts.Communicate(
-            text=cleaned,
-            voice=voice,
-            rate=rate,
-            pitch=pitch,
-        )
-        await asyncio.wait_for(communicate.save(output_path), timeout=15.0)
-        return f"[OK] Speech audio generated: {output_path}"
-    except Exception as e:
-        return f"Audio generation error: {e}"
+    if _synthesize_charon_gemini(cleaned, output_path):
+        return f"[OK] JARVIS speech audio generated: {output_path}"
+    return f"[ERROR] Could not generate audio."
 
 
 async def list_neural_voices() -> str:
-    """Lists available neural voices."""
-    voices = [
-        ("en-GB-RyanNeural", "British English (Male) — Refined JARVIS / Ultron Baritone [DEFAULT]"),
-        ("en-GB-AlfieNeural", "British English (Male) — Crisp, articulate formal voice"),
-        ("en-US-GuyNeural", "US English (Male) — Deep American baritone"),
-        ("en-US-ChristopherNeural", "US English (Male) — Smooth professional narrator"),
-        ("en-IN-PrabhatNeural", "Indian English (Male) — Fluent natural voice"),
-        ("en-GB-SoniaNeural", "British English (Female) — Clear, intelligent assistant"),
-    ]
-    lines = ["Active Neural Voice Core for ULTRON:\n"]
-    for v, desc in voices:
-        lines.append(f"- {v}: {desc}")
-    return "\n".join(lines)
+    """Lists available neural voices for JARVIS."""
+    return (
+        "Active Voice Core for JARVIS:\n"
+        "- Charon: Google Gemini Live Deep Baritone (Default / Active)\n"
+        "- en-GB-RyanNeural: British English (Male) — Refined High-Performance Fallback\n"
+        "- Fenrir: Google Gemini Deep Dynamic Voice\n"
+        "- Puck: Google Gemini Conversational Voice\n"
+    )
