@@ -374,12 +374,12 @@ async def main_async():
     except Exception as e:
         print(f"⚠️ Scheduler Daemon note: {e}")
 
-    # 🔹 START AUTONOMOUS PROACTIVE SCREEN VISION & VISUAL CORTEX
+    # 🔹 START ULTRON Ω PROACTIVE COMPANION & SCREEN SENTINEL
     try:
-        from friday_tools.jarvis_visual_cortex import _CORTEX
-        _CORTEX.start()
+        from friday_tools.ultron_companion_bridge import _COMPANION
+        _COMPANION.start()
     except Exception as e:
-        print(f"⚠️ Visual Cortex note: {e}")
+        print(f"⚠️ Proactive Companion note: {e}")
 
     assistant = Assistant()
     context = RunContext()

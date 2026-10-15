@@ -178,8 +178,13 @@ class UltronOmegaCompanion:
                     curr_hash = compute_perceptual_hash(img)
                     h_dist = hamming_distance(curr_hash, self.last_screen_hash)
 
-                    # Only run visual inference if screen meaningfully changed or window changed
-                    if win_changed or h_dist >= 8:
+                    # Evaluate if screen changed, window switched, or 15s silence policy is due
+                    silence_due = (
+                        (now - self.proactive_engine.last_user_speech_at >= 15.0) and
+                        (now - self.proactive_engine.last_proactive_spoken_at >= self.proactive_engine.get_current_cooldown())
+                    )
+
+                    if win_changed or h_dist >= 6 or silence_due:
                         self.last_screen_hash = curr_hash
 
                         idle_sec = 0.0
