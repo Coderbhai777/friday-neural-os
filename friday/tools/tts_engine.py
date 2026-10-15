@@ -1,13 +1,12 @@
 """
-JARVIS / ULTRON Neural Voice & Speech Engine (Single Audio Owner Architecture)
+JARVIS / ULTRON Neural Voice & Speech Engine
 Default Voice: Google Charon (Deep, Authoritative AI Voice)
-Features:
-- Single Dedicated Audio Owner Thread (eliminates all Pygame mixer concurrency races)
-- Request-Isolated Playback with Request ID tracking (stale sentences from old queries dropped immediately)
-- Instant Barge-In Cancellation (stops playback and purges queued speech within <50ms)
-- Sentence-by-sentence queue streaming (begins speaking first sentence while remaining response synthesizes)
-- Strict 5.0-second synthesis deadline per sentence
-- Zero RyanNeural fallback (uses authoritative baritone if emergency offline)
+
+Strict Architecture Constraints:
+1. Pure Single-Audio-Owner: ALL pygame.mixer calls (init, load, play, stop, unload) occur exclusively inside the speech worker thread via control messages.
+2. Real Gemini HTTP Timeout: Enforces socket-level timeout via types.HttpOptions(timeout=ms).
+3. Robust Cancellation & Barge-In: Invalidation of request_id, atomic queue purge, and worker STOP control message.
+4. Resilient Worker Lifecycle: Safe startup error handling with self-healing restart capability.
 """
 
 import os
@@ -19,9 +18,12 @@ import wave
 import queue
 import tempfile
 import threading
+import logging
 from pathlib import Path
 from typing import Optional, List, Tuple
 from dotenv import load_dotenv
+
+logger = logging.getLogger("JARVIS.TTS")
 
 # Ensure .env is loaded
 for env_p in [
@@ -34,11 +36,15 @@ for env_p in [
         load_dotenv(env_p)
 
 DEFAULT_VOICE = os.getenv("VOICE_NAME", "Charon")
-FALLBACK_EDGE_VOICE = "en-US-ChristopherNeural"  # Authoritative baritone (never Ryan)
+FALLBACK_EDGE_VOICE = "en-US-ChristopherNeural"  # Authoritative baritone fallback (never Ryan)
+GEMINI_VOICE_NAME = DEFAULT_VOICE
+EDGE_FALLBACK_VOICE = FALLBACK_EDGE_VOICE
 
-_speech_queue: "queue.Queue[Optional[Tuple[int, str]]]" = queue.Queue(maxsize=16)
+# Control message types: ("SPEAK", req_id, text), ("STOP", None, None), ("QUIT", None, None)
+_speech_queue: "queue.Queue[Tuple[str, Optional[int], Optional[str]]]" = queue.Queue(maxsize=32)
 _current_request_id = 0
 _id_lock = threading.Lock()
+_worker_thread: Optional[threading.Thread] = None
 _worker_started = False
 _is_speaking = False
 
@@ -56,17 +62,25 @@ def get_current_request_id() -> int:
 def new_speech_session() -> int:
     """
     Begins a new speech session for a user request.
-    Increments request ID, flushes pending speech queue, and halts current playback immediately.
+    Increments request ID, flushes pending speech queue, and signals worker to halt active playback immediately.
+    """
+    global _current_request_id
+    # Calling stop_speech() invalidates prior audio and advances _current_request_id
+    stop_speech()
+    with _id_lock:
+        return _current_request_id
+
+
+def stop_speech():
+    """
+    Signals the single-owner speech worker to immediately stop playback and clear pending sentences.
+    Guaranteed thread-safe and non-racing.
     """
     global _current_request_id
     with _id_lock:
         _current_request_id += 1
-        active_id = _current_request_id
 
-    # Stop active playback
-    stop_speech()
-
-    # Drain any stale queued items
+    # Drain any pending speech messages from queue
     while not _speech_queue.empty():
         try:
             _speech_queue.get_nowait()
@@ -74,24 +88,15 @@ def new_speech_session() -> int:
         except Exception:
             break
 
-    return active_id
-
-
-def stop_speech():
-    """Immediately stops any ongoing speech playback for instant barge-in interruption."""
-    global _is_speaking
+    # Send STOP control message to worker thread to handle mixer stop
     try:
-        import pygame
-        if pygame.mixer.get_init():
-            pygame.mixer.music.stop()
-            pygame.mixer.music.unload()
+        _speech_queue.put_nowait(("STOP", None, None))
     except Exception:
         pass
-    _is_speaking = False
 
 
 def _clean_text_for_speech(text: str) -> str:
-    """Cleans markdown, backticks, urls, and json from text for natural speech."""
+    """Cleans markdown, backticks, URLs, and JSON from text for natural speech."""
     if not text:
         return ""
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
@@ -113,8 +118,11 @@ def split_into_sentences(text: str) -> List[str]:
     return [s.strip() for s in raw_sentences if len(s.strip()) > 1]
 
 
-def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 6.0) -> bool:
-    """Synthesizes voice using Google Gemini TTS API with Charon voice with strict deadline."""
+def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 5.0) -> bool:
+    """
+    Synthesizes voice using Google Gemini TTS API with Charon voice.
+    Strictly configures HTTP timeout via types.HttpOptions.
+    """
     try:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key or not api_key.startswith("AQ."):
@@ -134,11 +142,16 @@ def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 6
 
         voice_to_use = os.getenv("VOICE_NAME", "Charon")
         orig_google_key = os.environ.get("GOOGLE_API_KEY")
+        
+        # Milliseconds for HttpOptions timeout
+        timeout_ms = int(timeout_sec * 1000)
+        http_opts = types.HttpOptions(timeout=timeout_ms)
+
         try:
             if api_key.startswith("AQ."):
                 os.environ["GOOGLE_API_KEY"] = api_key
 
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(api_key=api_key, http_options=http_opts)
             tts_prompt = f"Please read the following text aloud verbatim:\n\n{text}"
             
             response = client.models.generate_content(
@@ -152,7 +165,8 @@ def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 6
                                 voice_name=voice_to_use
                             )
                         )
-                    )
+                    ),
+                    http_options=http_opts
                 )
             )
 
@@ -172,12 +186,13 @@ def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 6
                 os.environ["GOOGLE_API_KEY"] = orig_google_key
             elif "GOOGLE_API_KEY" in os.environ and api_key.startswith("AQ."):
                 del os.environ["GOOGLE_API_KEY"]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Gemini TTS synthesis failed or timed out: {e}")
         return False
 
 
-def _synthesize_edge_fallback(text: str, output_mp3: str, voice: str = FALLBACK_EDGE_VOICE) -> bool:
-    """Synthesizes speech using Edge-TTS as fallback with baritone voice."""
+def _synthesize_edge_fallback(text: str, output_mp3: str, voice: str = FALLBACK_EDGE_VOICE, timeout_sec: float = 3.5) -> bool:
+    """Synthesizes speech using Edge-TTS as emergency fallback with baritone voice."""
     try:
         import asyncio
         import edge_tts
@@ -188,138 +203,173 @@ def _synthesize_edge_fallback(text: str, output_mp3: str, voice: str = FALLBACK_
 
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(asyncio.wait_for(_run(), timeout=4.0))
+            loop.run_until_complete(asyncio.wait_for(_run(), timeout=timeout_sec))
             return os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 0
         finally:
             loop.close()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Edge-TTS fallback synthesis failed: {e}")
         return False
 
 
 def _speech_worker_loop():
-    """Single audio device owner thread. Dispatches one sentence at a time with request gating."""
-    global _is_speaking
-    import pygame
-
+    """
+    Dedicated single-audio-owner thread.
+    Exclusively handles all Pygame mixer operations and sequential playback.
+    """
+    global _is_speaking, _worker_started
+    
+    # Safe Pygame initialization inside the worker thread
     try:
+        import pygame
         if not pygame.mixer.get_init():
             pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
     except Exception as e:
-        print(f"⚠️ Pygame mixer init note: {e}")
+        logger.error(f"Failed to initialize Pygame mixer in audio worker: {e}")
+        _worker_started = False
+        return
 
     while True:
         try:
-            item = _speech_queue.get()
-            if item is None:
+            msg = _speech_queue.get()
+            if msg is None:
                 break
 
-            req_id, sentence = item
-            
-            # Check if this request was superseded by a newer one
-            if req_id != get_current_request_id():
+            cmd, req_id, sentence = msg
+
+            if cmd == "QUIT":
                 _speech_queue.task_done()
-                continue
+                break
 
-            cleaned = _clean_text_for_speech(sentence)
-            if not cleaned:
-                _speech_queue.task_done()
-                continue
-
-            # Synthesize sentence to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                tmp_path = tmp.name
-
-            success = _synthesize_charon_gemini(cleaned, tmp_path, timeout_sec=5.0)
-
-            # If Gemini timed out or failed, try edge baritone fallback
-            if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            if cmd == "STOP":
+                # Handle mixer stop directly on the owner thread
                 try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_fb:
-                    tmp_path = tmp_fb.name
-                _synthesize_edge_fallback(cleaned, tmp_path)
-
-            # Re-check if cancelled while synthesizing
-            if req_id != get_current_request_id() or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-                _speech_queue.task_done()
-                continue
-
-            # Playback
-            try:
-                _is_speaking = True
-                if not pygame.mixer.get_init():
-                    pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
-
-                pygame.mixer.music.load(tmp_path)
-                pygame.mixer.music.play()
-
-                # Wait for playback or barge-in
-                start_p = time.time()
-                while pygame.mixer.music.get_busy():
-                    if req_id != get_current_request_id() or (time.time() - start_p) > 20.0:
+                    if pygame.mixer.get_init():
                         pygame.mixer.music.stop()
-                        break
-                    time.sleep(0.04)
-
-                pygame.mixer.music.stop()
-                pygame.mixer.music.unload()
-            finally:
-                _is_speaking = False
-                try:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                        pygame.mixer.music.unload()
                 except Exception:
                     pass
+                _is_speaking = False
                 _speech_queue.task_done()
+                continue
+
+            if cmd == "SPEAK":
+                # Discard stale request items
+                if req_id != get_current_request_id():
+                    _speech_queue.task_done()
+                    continue
+
+                cleaned = _clean_text_for_speech(sentence or "")
+                if not cleaned:
+                    _speech_queue.task_done()
+                    continue
+
+                # 1. Synthesize sentence
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp_path = tmp.name
+
+                success = _synthesize_charon_gemini(cleaned, tmp_path, timeout_sec=5.0)
+
+                # Fallback to Edge baritone if Gemini timed out or failed
+                if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_fb:
+                        tmp_path = tmp_fb.name
+                    _synthesize_edge_fallback(cleaned, tmp_path, timeout_sec=3.5)
+
+                # Check if request was cancelled while synthesis was in-flight
+                if req_id != get_current_request_id() or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    _speech_queue.task_done()
+                    continue
+
+                # 2. Playback via Pygame (isolated on this thread)
+                try:
+                    _is_speaking = True
+                    if not pygame.mixer.get_init():
+                        pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
+
+                    pygame.mixer.music.load(tmp_path)
+                    pygame.mixer.music.play()
+
+                    # Wait for playback completion or barge-in cancellation
+                    start_p = time.time()
+                    while pygame.mixer.music.get_busy():
+                        if req_id != get_current_request_id() or (time.time() - start_p) > 25.0:
+                            pygame.mixer.music.stop()
+                            break
+                        time.sleep(0.03)
+
+                    pygame.mixer.music.stop()
+                    pygame.mixer.music.unload()
+                finally:
+                    _is_speaking = False
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    _speech_queue.task_done()
 
         except Exception as e:
             _is_speaking = False
-            time.sleep(0.1)
+            logger.error(f"Speech worker exception: {e}")
+            time.sleep(0.05)
 
 
-def ensure_speech_worker():
-    """Ensures the single dedicated speech worker thread is running."""
-    global _worker_started
-    if not _worker_started:
+def ensure_speech_worker() -> bool:
+    """Ensures the single dedicated speech worker thread is running and healthy."""
+    global _worker_started, _worker_thread
+    if not _worker_started or _worker_thread is None or not _worker_thread.is_alive():
         _worker_started = True
-        t = threading.Thread(target=_speech_worker_loop, daemon=True, name="JARVIS_SpeechWorker")
-        t.start()
+        _worker_thread = threading.Thread(target=_speech_worker_loop, daemon=True, name="JARVIS_SpeechWorker")
+        _worker_thread.start()
+    return _worker_started
 
 
-# Start worker on module load
+# Auto-start worker on module load
 ensure_speech_worker()
 
 
-def enqueue_sentence(sentence: str, request_id: Optional[int] = None):
-    """Enqueues a single sentence for spoken output under the given request_id."""
+def enqueue_sentence(sentence: str, request_id: Optional[int] = None) -> bool:
+    """
+    Enqueues a sentence for playback under request_id.
+    Returns True if successfully queued, False if queue full or text invalid.
+    """
     ensure_speech_worker()
     r_id = request_id if request_id is not None else get_current_request_id()
-    if sentence and sentence.strip():
-        try:
-            _speech_queue.put_nowait((r_id, sentence.strip()))
-        except queue.Full:
-            pass
+    if not sentence or not sentence.strip():
+        return False
+
+    try:
+        _speech_queue.put_nowait(("SPEAK", r_id, sentence.strip()))
+        return True
+    except queue.Full:
+        logger.warning(f"Speech queue full (32 items); dropping overflow sentence: {sentence[:30]}...")
+        return False
 
 
 def speak_text_sync(text: str) -> str:
-    """Synchronous speech convenience function for short announcements."""
+    """Synchronous convenience function for announcements."""
     req_id = new_speech_session()
     sentences = split_into_sentences(text)
     if not sentences:
         return "No text to speak."
-    for s in sentences[:3]:  # Cap to first 3 sentences
-        enqueue_sentence(s, req_id)
-    return f"[JARVIS Charon Voice] Queued {len(sentences)} sentence(s)."
+    queued = 0
+    for s in sentences[:3]:
+        if enqueue_sentence(s, req_id):
+            queued += 1
+    return f"[JARVIS Charon Voice] Queued {queued} sentence(s)."
 
 
 async def speak_text(text: str) -> str:
-    """Async wrapper for speech."""
+    """Async speech convenience function."""
     return speak_text_sync(text)
 
 

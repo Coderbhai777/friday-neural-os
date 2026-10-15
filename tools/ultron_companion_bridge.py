@@ -90,7 +90,7 @@ class UltronOmegaCompanion:
         self.running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="ULTRON_CompanionLoop")
         self._thread.start()
-        print("👁️ [ULTRON OMEGA Companion] Event-driven desktop observer online (Silence-by-Default active).")
+        print("[ULTRON OMEGA Companion] Event-driven desktop observer online (Silence-by-Default active).")
 
     def stop(self):
         """Stops the companion background monitor."""

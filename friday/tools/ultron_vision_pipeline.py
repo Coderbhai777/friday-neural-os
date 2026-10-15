@@ -59,18 +59,26 @@ def _capture_in_worker_thread(box: list, max_dim: int, quality: int):
             user32.CloseDesktop(h_desk)
 
 
+import concurrent.futures
+_CAPTURE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ScreenCaptureWorker")
+
+
+def _do_capture_task(max_dim: int, quality: int) -> Optional[Image.Image]:
+    box = []
+    _capture_in_worker_thread(box, max_dim, quality)
+    return box[0] if box and box[0] else None
+
+
 def capture_screen_direct(max_dim: int = 768, quality: int = 80) -> Optional[Image.Image]:
     """
-    Captures the primary monitor directly with guaranteed desktop attachment.
-    Returns a downscaled PIL Image or None if desktop is locked/unavailable.
+    Captures primary desktop with guaranteed desktop attachment via single persistent worker.
+    Never accumulates orphan capture threads.
     """
-    box = []
-    t = threading.Thread(target=_capture_in_worker_thread, args=(box, max_dim, quality), daemon=True)
-    t.start()
-    t.join(timeout=2.0)
-    if box and box[0]:
-        return box[0]
-    return None
+    try:
+        fut = _CAPTURE_EXECUTOR.submit(_do_capture_task, max_dim, quality)
+        return fut.result(timeout=2.0)
+    except Exception:
+        return None
 
 
 def capture_screen_bytes(max_dim: int = 768, quality: int = 80) -> Optional[bytes]:
@@ -202,16 +210,33 @@ def analyze_screen_with_ai(image: Image.Image, win_info: Dict[str, Any], idle_se
             "suggested_observation": None
         }
 
-    import google.generativeai as genai
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key or not api_key.startswith("AQ."):
+        for i in range(1, 10):
+            k = os.getenv(f"GEMINI_API_KEY_{i}")
+            if k and k.startswith("AQ."):
+                api_key = k
+                break
+    if not api_key:
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
     if not api_key:
         return _fallback_heuristic_analysis(win_info, idle_sec)
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        from google import genai
+        from google.genai import types
 
-        prompt = f"""
+        orig_google_key = os.environ.get("GOOGLE_API_KEY")
+        http_opts = types.HttpOptions(timeout=10000)
+
+        try:
+            if api_key.startswith("AQ."):
+                os.environ["GOOGLE_API_KEY"] = api_key
+
+            client = genai.Client(api_key=api_key, http_options=http_opts)
+
+            prompt = f"""
 You are ULTRON's Visual Cortex analyzing the user's active desktop screen.
 Active Window Title: {win_info.get('title')}
 Active Process: {win_info.get('app')}
@@ -235,15 +260,26 @@ STRICT RULES:
 4. If reading technical docs: suggest: "That section looks relevant to your project. Want me to summarize it?"
 5. Return ONLY pure JSON with no markdown backticks.
 """
-        resp = model.generate_content([prompt, image])
-        text = resp.text.strip() if resp and resp.text else ""
-        text = text.replace("```json", "").replace("```", "").strip()
+            resp = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[prompt, image],
+                config=types.GenerateContentConfig(http_options=http_opts)
+            )
 
-        import json
-        data = json.loads(text)
-        data["is_sensitive"] = False
-        return data
+            text = resp.text.strip() if resp and resp.text else ""
+            text = text.replace("```json", "").replace("```", "").strip()
+
+            import json
+            data = json.loads(text)
+            data["is_sensitive"] = False
+            return data
+        finally:
+            if orig_google_key is not None:
+                os.environ["GOOGLE_API_KEY"] = orig_google_key
+            elif "GOOGLE_API_KEY" in os.environ and api_key.startswith("AQ."):
+                del os.environ["GOOGLE_API_KEY"]
     except Exception as e:
+        logger.debug(f"Vision API call exception or timeout: {e}")
         return _fallback_heuristic_analysis(win_info, idle_sec)
 
 
