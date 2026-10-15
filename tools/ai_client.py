@@ -176,10 +176,9 @@ def generate_single_turn_ai(prompt: str, system_instruction: str = "", max_token
         import groq
 
         groq_models = [
-            "deepseek-r1-distill-llama-70b",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "qwen/qwen3.8-27b"
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b"
         ]
 
         messages = [
@@ -268,10 +267,9 @@ def generate_ai_response(prompt: str, system_instruction: str = "") -> str:
         import groq
 
         groq_models = [
-            "deepseek-r1-distill-llama-70b",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "qwen/qwen3.8-27b"
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b"
         ]
 
         messages = mem.get_groq_messages(

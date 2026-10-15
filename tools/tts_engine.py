@@ -35,7 +35,7 @@ if os.getenv("ASSISTANT_NAME", "").lower() == "simran":
     FALLBACK_EDGE_VOICE = "en-IN-NeerjaNeural"
     DEFAULT_VOICE = "Aoede"
 else:
-    FALLBACK_EDGE_VOICE = "en-GB-RyanNeural"
+    FALLBACK_EDGE_VOICE = "en-US-ChristopherNeural"  # Deep authoritative baritone fallback (never Ryan)
     DEFAULT_VOICE = os.getenv("VOICE_NAME", "Charon")
 DEFAULT_PITCH = "+0Hz"
 DEFAULT_RATE = "+0%"
@@ -120,39 +120,64 @@ def _clean_text_for_speech(text: str) -> str:
 def _synthesize_charon_gemini(text: str, output_wav: str) -> bool:
     """Synthesizes voice using Google Gemini TTS API with Charon voice."""
     try:
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        # Prioritize true Gemini key
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key or not api_key.startswith("AQ."):
+            for i in range(1, 10):
+                k = os.getenv(f"GEMINI_API_KEY_{i}")
+                if k and k.startswith("AQ."):
+                    api_key = k
+                    break
+        if not api_key:
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
         if not api_key:
             return False
 
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",
-            contents=text,
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=DEFAULT_VOICE
+        voice_to_use = os.getenv("VOICE_NAME", "Charon")
+        # Ensure google-genai SDK does not fall back to an invalid search GOOGLE_API_KEY
+        orig_google_key = os.environ.get("GOOGLE_API_KEY")
+        try:
+            if api_key.startswith("AQ."):
+                os.environ["GOOGLE_API_KEY"] = api_key
+
+            client = genai.Client(api_key=api_key)
+            # Instruct Gemini TTS explicitly to speak the exact transcript verbatim
+            tts_prompt = f"Please read the following text aloud verbatim:\n\n{text}"
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-preview-tts",
+                contents=tts_prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=voice_to_use
+                            )
                         )
                     )
                 )
             )
-        )
 
-        for part in response.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.data:
-                data = part.inline_data.data
-                with wave.open(output_wav, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(24000)
-                    wf.writeframes(data)
-                return True
-        return False
+            if response and response.candidates and response.candidates[0].content:
+                for part in response.candidates[0].content.parts:
+                    if part.inline_data and part.inline_data.data:
+                        data = part.inline_data.data
+                        with wave.open(output_wav, "wb") as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(24000)
+                            wf.writeframes(data)
+                        return True
+            return False
+        finally:
+            if orig_google_key is not None:
+                os.environ["GOOGLE_API_KEY"] = orig_google_key
+            elif "GOOGLE_API_KEY" in os.environ and api_key.startswith("AQ."):
+                del os.environ["GOOGLE_API_KEY"]
     except Exception as e:
         return False
 

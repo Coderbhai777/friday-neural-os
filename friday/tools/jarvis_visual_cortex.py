@@ -213,23 +213,8 @@ Always address Shivansh respectfully as Sir. Speak only the exact words you say 
         while self.running:
             time.sleep(1.2)
             try:
-                # 1. Ingest real-time Antigravity activity
-                prompt_text = self.scan_antigravity_events()
-                if prompt_text:
-                    # Check for frustration / click failure triggers
-                    frustration_keywords = [
-                        "not working", "not clicking", "it is not clicking",
-                        "failed", "cant click", "can't click", "didn't click",
-                        "stuck", "broken", "dude it is not"
-                    ]
-                    
-                    if any(k in prompt_text for k in frustration_keywords):
-                        now = time.time()
-                        if (now - self.last_spoken_at) > 10.0:
-                            self.last_spoken_at = now
-                            reaction = self.ask_myself_whats_on_screen(user_prompt_hint=prompt_text)
-                            self.trigger_reflex(reaction, reason="ANTIGRAVITY DETECTED")
-                            continue
+                # Background optical awareness without repetitive transcript reflex interruptions
+                pass
 
                 # 2. General presence check during active work
                 now = time.time()
