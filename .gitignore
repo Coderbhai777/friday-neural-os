@@ -1,0 +1,37 @@
+# === Environment & Secrets (NEVER COMMIT) ===
+.env
+.env.*
+*.env
+credentials.json
+secrets.json
+
+# === Python Cache & Bytecode ===
+__pycache__/
+*.py[cod]
+*.class
+*.pyc
+*.pyo
+
+# === Virtual Environments & Builds ===
+venv/
+.venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# === User / Local Assistant Data ===
+*_Data/
+*_Notes/
+*_Recordings/
+*.log
+contacts.json
+app_usage_log.json
+error.txt
+Edith.json
+
+# === IDEs & Editors ===
+.vscode/
+.idea/
+*.swp
+*.swo

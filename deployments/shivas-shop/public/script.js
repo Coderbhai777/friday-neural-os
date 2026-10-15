@@ -1,0 +1,1 @@
+console.log("Shiva's Shop website deployed successfully.");
