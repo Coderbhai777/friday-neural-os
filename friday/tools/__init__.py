@@ -436,3 +436,19 @@ try:
 except ImportError as e:
     print(f'[JARVIS] flight_radar not available: {e}')
 
+try:
+    from tools.ultron_companion_bridge import *
+    from tools.ultron_file_sentinel import *
+    from tools.ultron_vision_pipeline import *
+    from tools.ultron_memory_engine import *
+    from tools.ultron_proactive_engine import *
+except ImportError:
+    try:
+        from friday_tools.ultron_companion_bridge import *
+        from friday_tools.ultron_file_sentinel import *
+        from friday_tools.ultron_vision_pipeline import *
+        from friday_tools.ultron_memory_engine import *
+        from friday_tools.ultron_proactive_engine import *
+    except ImportError as e:
+        print(f'[ULTRON Ω] companion modules not available: {e}')
+

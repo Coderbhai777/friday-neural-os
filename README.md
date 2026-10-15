@@ -28,16 +28,20 @@
   - Accurate runway touchdown estimation down to the minute.
 - **Live Space Station Telemetry**: Real-time geodesic tracking of the International Space Station (ISS) with orbital velocity, altitude, and upcoming regional pass predictions.
 
-### 3. 👁️ Ambient Vision & Visual Cortex
-- **Proactive Screen Sentinel**: Continuous low-overhead visual perception analyzing active desktop context.
-- **Autonomous Computer Use**: Coordinate extraction, UI navigation, automated form interaction, and element clicking.
-- **Multimodal Homework & Technical Solver**: Instant step-by-step solutions for complex math equations, engineering problems, and scientific queries via Gemini Vision.
+### 3. 👁️ ULTRON Ω Continuous Screen Vision & Proactive Companion
+- **Guaranteed Direct Desktop Capture**: Employs an isolated worker thread attached directly to `WinSta0\Default` to bypass BitBlt access barriers and capture 1080p desktop frames in <40ms.
+- **Adaptive Sampling & Perceptual dHash**: Evaluates window metadata every 2s; computes 16x16 difference hashes to eliminate redundant vision model inference on static screens (8GB RAM optimized).
+- **Automatic Privacy Shield**: Proactively detects and blinds capture whenever sensitive windows are foregrounded (password vaults, banking, 2FA, incognito).
+- **15-Second Silence Policy**: Evaluates conversation initiative only after a configurable 15s user silence window, adhering to adaptive backoff cooldowns (60s–300s) to never speak incessantly.
+- **Screen-to-Memory Fallback**: When screen is obscured or locked, consults stored project memories as explicit hypotheses ("Earlier you were working on X...") rather than pretending to see.
+- **Protective File Sentinel**: Intercepts risky file deletions on registered projects, warning the user and requiring verified SHA-256 backup creation before claiming safety.
 
 ### 4. 🛠️ 800+ Autonomous Tool Subsystem
 - **Communication & Social Autopilot**: Full headless WhatsApp engine, intelligent email management (IMAP/SMTP copilot, phishing detection, OTP extraction).
 - **System & Security Suite**: Hardware power management, audio/volume matrix, process watchdog, network discovery, and diagnostics.
 - **Autonomous Subagents**: Parallel background worker spawning for multi-threaded intelligence tasks, web scraping, and deep research.
 - **Productivity & Memory**: Persistent semantic memory with local JSON stores, deterministic alarms, reminders, and background scheduler daemon.
+- **Integration Test Suite**: Complete automated verification covering Tests A through L (`test_ultron_omega.py`).
 
 ---
 
