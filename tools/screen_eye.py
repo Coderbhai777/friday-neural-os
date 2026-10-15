@@ -77,8 +77,9 @@ async def meeting_take_notes(duration_seconds: int = 60, topic: str = "Live Disc
     """
     try:
         import speech_recognition as sr
+        from tools.mic_resolver import get_best_sr_microphone
         r = sr.Recognizer()
-        with sr.Microphone() as source:
+        with get_best_sr_microphone() as source:
             r.adjust_for_ambient_noise(source, duration=1)
             audio = r.record(source, duration=duration_seconds)
             

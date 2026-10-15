@@ -44,7 +44,12 @@ def _record_audio_clip(duration: float = 3.0, sample_rate: int = 16000) -> Optio
     dur = max(1.0, min(3.0, float(duration)))
     try:
         import sounddevice as sd
-        audio = sd.rec(int(dur * sample_rate), samplerate=sample_rate, channels=1, dtype='float32')
+        try:
+            from tools.mic_resolver import get_best_sounddevice_input
+            dev = get_best_sounddevice_input()
+        except Exception:
+            dev = None
+        audio = sd.rec(int(dur * sample_rate), samplerate=sample_rate, channels=1, dtype='float32', device=dev)
         sd.wait()
         if audio is None:
             return None

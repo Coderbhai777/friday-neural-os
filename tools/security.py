@@ -188,8 +188,13 @@ async def stealth_microphone_record(duration: int = 10) -> str:
     Captures real audio from the system microphone and saves it as an encrypted-ready WAV file.
     """
     try:
+        try:
+            from tools.mic_resolver import get_best_sounddevice_input
+            dev = get_best_sounddevice_input()
+        except Exception:
+            dev = None
         fs = 44100
-        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, device=dev)
         sd.wait()
         filename = f"capture_{int(time.time())}.wav"
         wav_write(filename, fs, recording)
