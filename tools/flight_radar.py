@@ -343,35 +343,21 @@ async def get_world_review() -> str:
     )
 
 
-async def launch_world_globe(mode: str = "all") -> str:
+async def launch_world_globe(mode: str = "godseye") -> str:
     """
-    Switches the central display to the 3D Tactical World Globe radar and launches
-    the standalone compiled JARVIS_World_Globe.exe tool.
-    Supports mode='map', mode='globe', mode='live', or mode='all'.
+    Switches the central display to the God's Eye satellite recon view (gods-eye-view).
     """
-    mode_str = str(mode).lower()
-    if "live" in mode_str:
-        target_ui_mode = "live"
-    elif "map" in mode_str:
-        target_ui_mode = "map"
-    else:
-        target_ui_mode = "globe"
+    target_ui_mode = "godseye"
 
-    launched_exe = False
-    for exe_cand in [
-        Path(r"C:\Users\shiva\Desktop\JARVIS_World_Globe.exe"),
-        Path(r"C:\Users\shiva\Desktop\JARVIS_Portable\JARVIS_Portable\JARVIS_World_Globe.exe")
-    ]:
-        if exe_cand.exists():
-            try:
-                import subprocess
-                subprocess.Popen([str(exe_cand), target_ui_mode], shell=True)
-                launched_exe = True
-                break
-            except Exception:
-                pass
+    try:
+        from aria_modules.sagar_orb_widget import get_active_orb_widget, ensure_gods_eye_server
+        ensure_gods_eye_server()
+        orb = get_active_orb_widget()
+        if orb and hasattr(orb, "switch_ui_mode"):
+            orb.switch_ui_mode(target_ui_mode)
+    except Exception:
+        pass
 
-    # Also switch embedded UI mode if window is open
     try:
         from aria_modules.screen_direct_bridge import get_active_window
         win = get_active_window()
@@ -380,51 +366,12 @@ async def launch_world_globe(mode: str = "all") -> str:
     except Exception:
         pass
 
-    try:
-        from aria_modules.sagar_orb_widget import get_active_orb_widget
-        orb = get_active_orb_widget()
-        if orb and hasattr(orb, "switch_ui_mode"):
-            orb.switch_ui_mode(target_ui_mode)
-    except Exception:
-        pass
-
-    if target_ui_mode == "live":
-        return "Sir, I have activated the real-time Live High-Definition Earth optical stream from the ISS on your display."
-    if target_ui_mode == "map":
-        return "Sir, I have engaged the 2D Tactical Flight Radar map with 11,500+ real live ADS-B aircraft and the live ISS orbital ground track."
-    if launched_exe:
-        return "Sir, I have launched the standalone JARVIS World Globe Tactical Radar application (JARVIS_World_Globe.exe) and engaged the 3D Tactical World Globe."
-    return "Sir, the 3D Tactical World Globe is online with real-time ISS and flight radar feeds."
+    return "Sir, I have engaged the God's Eye satellite view on your central display."
 
 
 async def get_live_earth_view() -> str:
     """
-    Activates the real-time Live High-Definition Optical Video Stream of Earth
-    from the International Space Station (ISS) cameras, synced with planetary flight radar.
+    Activates the real-time God's Eye Satellite Reconnaissance System in the central console.
     """
-    try:
-        from aria_modules.sagar_orb_widget import get_active_orb_widget
-        orb = get_active_orb_widget()
-        if orb and hasattr(orb, "switch_ui_mode"):
-            orb.switch_ui_mode("live")
-    except Exception:
-        pass
-
-    try:
-        from aria_modules.screen_direct_bridge import get_active_window
-        win = get_active_window()
-        if win and hasattr(win, "_orb") and hasattr(win._orb, "web_view"):
-            win._orb.web_view.page().runJavaScript("if (window.switchUIMode) window.switchUIMode('live');")
-    except Exception:
-        pass
-
-    iss = _get_live_iss_telemetry()
-    return (
-        f"[LIVE] [JARVIS LIVE HIGH-DEFINITION PLANETARY FEED ACTIVATED]\n"
-        f"- Source: International Space Station External HD Optical Sensor\n"
-        f"- Current Orbit Location: Lat {iss['latitude']} deg, Lon {iss['longitude']} deg\n"
-        f"- Orbital Altitude: {iss['altitude_km']} km | Velocity: {iss['velocity_kmh']:,} km/h\n"
-        f"- Illumination: {iss['visibility'].upper()}\n\n"
-        f"Sir, I have activated the live high-definition optical Earth feed from the ISS in your central tactical console. Real-time global flight radar and orbital telemetry are running live."
-    )
+    return await launch_world_globe("godseye")
 

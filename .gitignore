@@ -35,3 +35,7 @@ Edith.json
 .idea/
 *.swp
 *.swo
+
+# === External Subprojects ===
+gods-eye-view/
+
