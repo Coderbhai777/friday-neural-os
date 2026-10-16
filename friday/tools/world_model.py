@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 WORLD_STATE_FILE = Path.home() / "Documents" / "ULTRON_Data" / "world_state.json"
+WORLD_MODEL_FILE = Path.home() / "Documents" / "ULTRON_Data" / "world_model.json"
 WORLD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 _lock = threading.Lock()
@@ -69,7 +70,9 @@ def _save_world_state(state: Dict[str, Any]):
     with _lock:
         try:
             state["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            WORLD_STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+            data_str = json.dumps(state, indent=2, ensure_ascii=False)
+            WORLD_STATE_FILE.write_text(data_str, encoding="utf-8")
+            WORLD_MODEL_FILE.write_text(data_str, encoding="utf-8")
         except Exception:
             pass
 

@@ -317,24 +317,36 @@ class Assistant:
         except Exception:
             pass
 
+        # 🔹 7-TIER AUTONOMOUS MEMORY RETRIEVAL & CONTEXT BUILDER
+        memory_context = ""
+        try:
+            from tools.ultron_memory_engine import MEMORY_ENGINE
+            memory_context = MEMORY_ENGINE.build_injected_context(message)
+        except Exception:
+            try:
+                from friday_tools.ultron_memory_engine import MEMORY_ENGINE
+                memory_context = MEMORY_ENGINE.build_injected_context(message)
+            except Exception:
+                pass
+
+        # 🔹 MISSION RECOVERY SHORTCUT: "Continue the project"
+        if any(p in message.lower() for p in ["continue the project", "continue project", "continue my project", "what was i doing", "resume work"]):
+            try:
+                unfin = MEMORY_ENGINE.working.get_unfinished_summary()
+                if unfin:
+                    message = f"{message} (Persistent working memory across restart: {unfin}. State the project and next step, and proceed.)"
+            except Exception:
+                pass
+
         # 🔹 SMART STORE MEMORY
         if message.lower().startswith("remember"):
             text = message.replace("remember", "", 1).strip()
-            add_to_logs(text)
-            try:
-                mem0.add(messages=[{"role": "user", "content": text}], user_id=USER_ID)
-            except Exception:
-                pass
-            return "I've saved that to my primary memory (Edith.json), Sir."
+            return remember(text)
 
         # 🔹 SMART AUTO-DETECT & STORE
         stored_items = auto_detect_and_store(message)
         if stored_items:
-            print(f"🧠 Auto-stored to Edith.json: {stored_items}")
-            try:
-                mem0.add(messages=[{"role": "user", "content": message}], user_id=USER_ID)
-            except Exception:
-                pass
+            print(f"🧠 Auto-stored to 7-Tier Memory: {stored_items}")
 
         # 🔹 AUTO-READ FILE PATHS
         import re
@@ -349,21 +361,71 @@ class Assistant:
         tool, args = route_intent(message)
         if tool:
             res = await tool(context, **args) if "context" in str(tool.__code__.co_varnames) else await tool(**args)
+            try:
+                MEMORY_ENGINE.record_interaction(message, str(res))
+            except Exception:
+                pass
             return str(res)
+
+        # 🔹 UNIVERSAL GENERAL-PURPOSE AUTONOMOUS COMPUTER AGENT (Section 1 & 2)
+        # If no hardcoded tool matched, evaluate if the query is an actionable computer task
+        action_indicators = [
+            "go to", "navigate", "open", "play", "subscribe", "organize", "create",
+            "build", "run", "launch", "click", "find", "clean", "test", "fix",
+            "control panel", "youtube", "website", "file", "program", "app"
+        ]
+        if any(ind in message.lower() for ind in action_indicators):
+            try:
+                from tools.ultron_autonomous_agent import AUTONOMOUS_AGENT, TASK_COMPLETED, TASK_BLOCKED
+                agent_res = await AUTONOMOUS_AGENT.execute_goal(message)
+                status = agent_res.get("status")
+
+                if status == TASK_COMPLETED:
+                    report = f"Task completed and verified, Sir. Executed {agent_res.get('steps_completed')} steps."
+                    try:
+                        import friday_tools.tts_engine as tts_engine
+                        tts_engine.speak_text_sync(report)
+                    except Exception:
+                        pass
+                    return report
+                elif status == TASK_BLOCKED:
+                    blocker = agent_res.get("blocker_reason", "Action paused for authorization.")
+                    try:
+                        import friday_tools.tts_engine as tts_engine
+                        tts_engine.speak_text_sync(blocker)
+                    except Exception:
+                        pass
+                    return f"[TASK BLOCKED]: {blocker}"
+            except Exception as e:
+                print(f"[AUTONOMOUS AGENT NOTE]: {e}")
 
         # 🔹 UNIFIED BOUNDED STREAMING AI CLIENT (Groq / Gemini Failover)
         try:
             import friday_tools.ai_client as ai_client
+        except ImportError:
+            import tools.ai_client as ai_client
+
+        clean_sys = f"{ai_client.ULTRON_PERSONA}\n\n{memory_context}" if memory_context else ai_client.ULTRON_PERSONA
+
+        try:
             print("\n🤖 ULTRON: ", end="", flush=True)
             reply = await ai_client.generate_ai_response_stream(
                 prompt=message,
+                system_instruction=clean_sys,
                 on_delta=lambda d: print(d, end="", flush=True)
             )
             print("\n")
+            try:
+                MEMORY_ENGINE.record_interaction(message, reply)
+            except Exception:
+                pass
             return reply
         except Exception:
-            import friday_tools.ai_client as ai_client
             reply = ai_client.generate_ai_response(message)
+            try:
+                MEMORY_ENGINE.record_interaction(message, reply)
+            except Exception:
+                pass
             return reply
 
 
@@ -400,6 +462,21 @@ async def main_async():
 
     assistant = Assistant()
     context = RunContext()
+
+    # 🔹 RESTORE UNFINISHED MISSION TASKS ACROSS PC RESTARTS
+    try:
+        from tools.ultron_memory_engine import MEMORY_ENGINE
+        unfin = MEMORY_ENGINE.working.get_unfinished_summary()
+        if unfin:
+            print(f"🔄 [ULTRON PERSISTENT RECOVERY]: Restored mission state across restart -> {unfin}")
+    except Exception:
+        try:
+            from friday_tools.ultron_memory_engine import MEMORY_ENGINE
+            unfin = MEMORY_ENGINE.working.get_unfinished_summary()
+            if unfin:
+                print(f"🔄 [ULTRON PERSISTENT RECOVERY]: Restored mission state across restart -> {unfin}")
+        except Exception:
+            pass
 
     # 🔹 STARTUP GREETING
     try:

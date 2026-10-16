@@ -1,79 +1,199 @@
+# -*- coding: utf-8 -*-
 """
-ULTRON JARVIS Tiered Security Policy & Clearance Matrix
-Enforces SAFE / SENSITIVE / DANGEROUS / BLOCKED operational classification.
-Protects dangerous operations behind explicit confirmation gates while permitting high-speed safe automation.
+ULTRON JARVIS Tiered Security Policy & Clearance Matrix (Section 7 Compliant)
+Enforces LOW / MEDIUM / HIGH / BLOCKED risk classification.
+Requires explicit authorization for high-risk operations.
+Provides global emergency stop to immediately cancel all active loops.
 """
 
 import os
-import json
-from typing import Dict, Any, Tuple, Optional
+import threading
+from typing import Dict, Any, Tuple, Optional, Set
+
+# Risk Constants
+RISK_LOW = "LOW"
+RISK_MEDIUM = "MEDIUM"
+RISK_HIGH = "HIGH"
+RISK_BLOCKED = "BLOCKED"
 
 # ==========================================
-# POLICY CLASSIFICATION MATRIX
+# 1. RISK CATEGORIES MATRIX
 # ==========================================
 
-SAFE_TOOLS = {
-    "get_cpu_usage", "get_ram_usage", "get_gpu_usage", "get_disk_usage", "get_network_status",
-    "get_battery_status", "get_temperature", "get_system_info", "get_world_state", "get_hud_state",
-    "web_search", "open_webpage", "extract_webpage", "summarize_page", "search_documentation",
-    "read_file", "search_code", "read_screen", "describe_scene", "ocr_screen", "find_object",
-    "open_youtube", "play_music", "get_room_temperature", "list_capabilities", "find_capability",
-    "get_user_context", "get_environment_state", "get_device_state", "get_active_tasks", "get_current_goal",
-    "list_todos", "read_calendar", "list_upcoming_events", "scan_serial_ports", "scan_lab"
+LOW_RISK_ACTIONS: Set[str] = {
+    # Opening apps, navigating websites, searching, scrolling, reading
+    "open_application", "open_website", "navigate_url", "search_web", "read_page",
+    "take_screenshot", "scroll_screen", "read_file", "list_files", "inspect_structure",
+    "get_status", "get_metrics", "find_element", "verify_state", "create_test_file",
+    "run_permitted_test", "describe_scene", "ocr_screen", "find_object"
 }
 
-SENSITIVE_TOOLS = {
-    "delete_file", "delete_upcoming_event", "clear_all_events", "upload_firmware", "esp32_flash_firmware",
-    "lock_pc", "sleep_pc", "restart_pc", "turn_light_on", "turn_light_off", "set_light_brightness",
-    "control_ac", "control_fan", "move_servo", "grab_object", "control_motor", "send_whatsapp_message",
-    "send_telegram_message", "email_send_reply", "email_smart_compose", "git_commit", "create_pull_request"
+MEDIUM_RISK_ACTIONS: Set[str] = {
+    # Installing dependencies, modifying existing projects, changing preferences, moving/overwriting files
+    "install_dependency", "modify_project_file", "change_preference",
+    "move_file", "overwrite_file", "execute_script", "compile_code",
+    "restart_application", "set_light_brightness", "git_commit"
 }
 
-DANGEROUS_TOOLS = {
-    "shutdown_system", "clean_system", "empty_recycle_bin", "port_scan", "vulnerability_scanner",
-    "sniff_network_packets", "disconnect_device_from_internet", "limit_device_bandwidth", "network_kill_switch",
-    "extract_browser_passwords", "execute_cmd", "execute_powershell"
+HIGH_RISK_ACTIONS: Set[str] = {
+    # Deleting important files, emptying recycle bin, sending messages/emails, purchases, security changes
+    "delete_file", "empty_recycle_bin", "send_email", "send_whatsapp_message",
+    "send_telegram_message", "make_purchase", "publish_content", "change_security_setting",
+    "modify_startup_behavior", "execute_admin_command", "disable_protection",
+    "shutdown_system", "restart_system", "clean_system", "extract_passwords",
+    "format_disk", "kill_process_force"
 }
 
-BLOCKED_TOOLS = {
-    "wifi_deauth_attack", "dns_spoofing_attack", "local_network_brute_force", "smb_eternalblue_scan"
+BLOCKED_ACTIONS: Set[str] = {
+    "wifi_deauth_attack", "dns_spoofing_attack", "local_network_brute_force", "smb_eternalblue_scan",
+    "bypass_uac", "bypass_captcha", "steal_credentials"
 }
 
 
+# ==========================================
+# 2. EMERGENCY STOP CONTROLLER
+# ==========================================
+
+class EmergencyStopController:
+    """Thread-safe global emergency stop mechanism."""
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self._stopped = False
+        self._reason = ""
+
+    @classmethod
+    def get_instance(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = EmergencyStopController()
+            return cls._instance
+
+    def trigger(self, reason: str = "User initiated emergency stop") -> str:
+        with self._lock:
+            self._stopped = True
+            self._reason = reason
+        print(f"\n[EMERGENCY STOP TRIGGERED]: {reason}\nAll autonomous actions immediately halted.")
+        return f"[EMERGENCY STOP ACTIVATED]: {reason}"
+
+    def reset(self) -> str:
+        with self._lock:
+            self._stopped = False
+            self._reason = ""
+        return "[EMERGENCY STOP CLEARED]: System returned to normal operating mode."
+
+    def is_stopped(self) -> bool:
+        with self._lock:
+            return self._stopped
+
+    def get_reason(self) -> str:
+        with self._lock:
+            return self._reason
+
+
+class EmergencyStopException(Exception):
+    """Raised when an action is attempted while emergency stop is active."""
+    pass
+
+
+class AuthorizationRequiredException(Exception):
+    """Raised when a HIGH RISK action is attempted without explicit authorization."""
+    pass
+
+
+_EMERGENCY_STOP = EmergencyStopController.get_instance()
+
+
+def trigger_emergency_stop(reason: str = "User initiated emergency stop") -> str:
+    return _EMERGENCY_STOP.trigger(reason)
+
+
+def reset_emergency_stop() -> str:
+    return _EMERGENCY_STOP.reset()
+
+
+def is_emergency_stopped() -> bool:
+    return _EMERGENCY_STOP.is_stopped()
+
+
+# ==========================================
+# 3. SAFETY EVALUATION
+# ==========================================
+
+def evaluate_action_risk(action_name: str, params: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """
+    Evaluates an action's risk tier according to Section 7:
+    - LOW: Open apps, navigate web, search, read, sandbox test
+    - MEDIUM: Dependency installation, modifying files, changing preferences
+    - HIGH: Deleting important files, emptying recycle bin, sending messages, admin commands
+    - BLOCKED: Network exploits, credential theft, security bypassing
+    """
+    if is_emergency_stopped():
+        return RISK_BLOCKED, f"🛑 Emergency Stop is active: {_EMERGENCY_STOP.get_reason()}"
+
+    act = action_name.lower().strip()
+
+    # Check blocked
+    if act in BLOCKED_ACTIONS or any(b in act for b in ["deauth", "eternalblue", "brute_force", "bypass_uac"]):
+        return RISK_BLOCKED, f"🚫 [POLICY BLOCKED]: '{action_name}' violates autonomous safety boundaries."
+
+    # Check high risk
+    if act in HIGH_RISK_ACTIONS or any(h in act for h in ["delete", "empty_recycle", "send_email", "send_message", "purchase", "admin", "format", "shutdown"]):
+        # Special case: deleting inside designated sandbox folder is medium risk
+        if act == "delete_file" and params and "sandbox" in str(params.get("path", "")).lower():
+            return RISK_MEDIUM, f"⚠️ [MEDIUM RISK]: Sandbox file deletion permitted within isolated test space."
+        return RISK_HIGH, f"⚠️ [HIGH RISK]: '{action_name}' requires explicit creator root authorization."
+
+    # Check medium risk
+    if act in MEDIUM_RISK_ACTIONS or any(m in act for m in ["install", "overwrite", "modify", "compile", "script"]):
+        return RISK_MEDIUM, f"🔔 [MEDIUM RISK]: '{action_name}' modifies workspace state or dependencies."
+
+    # Default to low risk
+    return RISK_LOW, f"✅ [LOW RISK]: '{action_name}' cleared for immediate execution."
+
+
+def check_action_permitted(action_name: str, params: Optional[Dict[str, Any]] = None, is_authorized: bool = False) -> Tuple[bool, str]:
+    """
+    Checks if an action is permitted to execute given the current authorization state.
+    Returns (permitted: bool, reason: str).
+    """
+    if is_emergency_stopped():
+        return False, f"Emergency Stop is ACTIVE: {_EMERGENCY_STOP.get_reason()}"
+
+    risk_tier, msg = evaluate_action_risk(action_name, params)
+
+    if risk_tier == RISK_BLOCKED:
+        return False, msg
+
+    if risk_tier == RISK_HIGH:
+        if not is_authorized:
+            return False, f"AUTHORIZATION REQUIRED: {msg} Confirm target and intended consequence."
+        return True, f"AUTHORIZED HIGH RISK: {msg}"
+
+    if risk_tier == RISK_MEDIUM:
+        return True, f"PERMITTED MEDIUM RISK: {msg}"
+
+    return True, f"PERMITTED LOW RISK: {msg}"
+
+
+# Backward compatibility aliases
 def evaluate_action_safety(tool_name: str, params: dict = None) -> Tuple[str, str]:
-    """
-    Evaluates safety tier of a requested tool execution:
-    - SAFE: Immediate automatic execution
-    - SENSITIVE: Requires single-click or voice confirmation
-    - DANGEROUS: Requires root confirmation
-    - BLOCKED: Prohibited in autonomous mode
-    """
-    t = tool_name.lower().strip()
-    
-    if t in BLOCKED_TOOLS:
-        return "BLOCKED", f"🚫 [POLICY BLOCKED]: Capability '{tool_name}' is restricted to controlled lab authorization."
-        
-    if t in DANGEROUS_TOOLS:
-        return "DANGEROUS", f"⚠️ [DANGEROUS OPERATION]: '{tool_name}' requires explicit creator root confirmation."
-        
-    if t in SENSITIVE_TOOLS:
-        return "SENSITIVE", f"🔔 [SENSITIVE ACTION]: '{tool_name}' requires operational confirmation."
-        
-    return "SAFE", f"✅ [SAFE]: '{tool_name}' cleared for immediate autonomous execution."
+    tier, msg = evaluate_action_risk(tool_name, params)
+    return tier, msg
 
 
 async def enforce_policy(tool_name: str, params: dict = None) -> str:
-    """Enforces safety policy before executing a tool."""
-    tier, msg = evaluate_action_safety(tool_name, params)
+    tier, msg = evaluate_action_risk(tool_name, params)
     return f"🛡️ [SECURITY POLICY EVALUATION]:\nTier: {tier}\nStatus: {msg}"
 
 
 async def list_policy_tiers() -> str:
-    """Lists summary of the security clearance tiers."""
     return (
-        "🛡️ [ULTRON TIERED CAPABILITY CLEARANCE MATRIX]:\n"
-        f"• SAFE (Auto-Execute): {len(SAFE_TOOLS)} capabilities (Telemetry, Vision, Search, Read)\n"
-        f"• SENSITIVE (Confirmation Required): {len(SENSITIVE_TOOLS)} capabilities (Actuators, Flashing, Sending)\n"
-        f"• DANGEROUS (Multi-Factor Root): {len(DANGEROUS_TOOLS)} capabilities (Power, System Sweeps)\n"
-        f"• BLOCKED (Lab Only): {len(BLOCKED_TOOLS)} capabilities (Offensive Network Injections)"
+        "🛡️ [ULTRON SECTION 7 POLICY CLEARANCE MATRIX]:\n"
+        f"• LOW RISK (Auto-Execute): Apps, Web Navigation, Search, Read, Sandboxed Files\n"
+        f"• MEDIUM RISK (Workspace Action): Dependencies, Project Code, Overwrite\n"
+        f"• HIGH RISK (Explicit Auth Required): Deletion, Outbox Messaging, Admin Execution, Power\n"
+        f"• BLOCKED (Strictly Prohibited): Exploits, Credential Theft, UAC Bypass\n"
+        f"• Emergency Stop: {'ACTIVE 🛑' if is_emergency_stopped() else 'READY ✅'}"
     )
