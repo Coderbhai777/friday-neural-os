@@ -153,7 +153,7 @@ def route_intent(q: str):
     if "hacking scan" in q: return vulnerability_scanner, {"target": q.split()[-1]}
     if "brute force" in q: return local_network_brute_force, {"target_ip": q.split()[-1]}
     if "metasploit" in q: return metasploit_demo_console, {}
-    if "home" in q: return control_lg_tv, {"command": "home"}
+    if q == "home" or "lg tv home" in q: return control_lg_tv, {"command": "home"}
     
     # --- JARVIS ADVANCED TIMER & REMINDER INTENTS ---
     if "how much time" in q and "timer" in q or "time left" in q and "timer" in q or "timer status" in q or "check timer" in q:
@@ -368,13 +368,42 @@ class Assistant:
             return str(res)
 
         # 🔹 UNIVERSAL GENERAL-PURPOSE AUTONOMOUS COMPUTER AGENT (Section 1 & 2)
-        # If no hardcoded tool matched, evaluate if the query is an actionable computer task
-        action_indicators = [
-            "go to", "navigate", "open", "play", "subscribe", "organize", "create",
-            "build", "run", "launch", "click", "find", "clean", "test", "fix",
-            "control panel", "youtube", "website", "file", "program", "app"
-        ]
-        if any(ind in message.lower() for ind in action_indicators):
+        # Evaluates if the query is an explicit imperative computer action goal
+        def is_autonomous_task(text: str) -> bool:
+            msg = text.strip().lower()
+            conversational_starters = (
+                "what", "why", "how", "who", "when", "where", "which",
+                "can you explain", "explain", "tell me", "describe", "define",
+                "do you know", "is it", "are you", "can you tell", "what is",
+                "what are", "why is", "why are", "who is", "who are",
+                "hello", "hi", "hey", "jarvis", "ultron", "status", "who made you"
+            )
+            if any(msg.startswith(qs) for qs in conversational_starters) or msg.endswith("?"):
+                explicit_overrides = [
+                    "open control panel", "launch control panel", "navigate to", "subscribe to",
+                    "organize my files", "organize files in", "create a game", "build a game"
+                ]
+                if not any(cmd in msg for cmd in explicit_overrides):
+                    return False
+
+            action_patterns = [
+                r"^(?:please\s+)?(?:open|launch|access|show)\s+(?:the\s+)?control\s+panel",
+                r"^(?:please\s+)?(?:open|launch|access|show)\s+(?:the\s+)?settings",
+                r"^(?:please\s+)?(?:open|launch|start)\s+[a-zA-Z0-9_\-\.\s]{2,25}\.(?:exe|cpl|msc)",
+                r"^(?:please\s+)?(?:go to|navigate to|browse to|open)\s+(?:https?://|www\.|youtube|google|github)",
+                r"^(?:please\s+)?subscribe\s+to\s+",
+                r"^(?:please\s+)?play\s+(?:video|song|track)\s+on\s+youtube",
+                r"^(?:please\s+)?(?:organize|clean(?:\s+up)?|sort)\s+(?:the\s+)?(?:files|folder|desktop|downloads)",
+                r"^(?:please\s+)?automate\s+",
+                r"^(?:please\s+)?(?:create|build|write|develop)\s+(?:a\s+)?(?:game|script|program|app|application)\s+(?:called|named|in|using)",
+                r"^(?:please\s+)?click\s+(?:on\s+)?(?:the\s+)?",
+                r"^(?:please\s+)?type\s+['\"].*['\"]\s+into\s+",
+                r"^execute\s+goal\s*:",
+                r"^autonomous\s+task\s*:",
+            ]
+            return any(re.search(pat, msg) for pat in action_patterns)
+
+        if is_autonomous_task(message):
             try:
                 from tools.ultron_autonomous_agent import AUTONOMOUS_AGENT, TASK_COMPLETED, TASK_BLOCKED
                 agent_res = await AUTONOMOUS_AGENT.execute_goal(message)
@@ -408,25 +437,42 @@ class Assistant:
         clean_sys = f"{ai_client.ULTRON_PERSONA}\n\n{memory_context}" if memory_context else ai_client.ULTRON_PERSONA
 
         try:
-            print("\n🤖 ULTRON: ", end="", flush=True)
+            try:
+                print("\n[ULTRON]: ", end="", flush=True)
+            except Exception:
+                pass
+
+            def _safe_print_delta(d: str):
+                try:
+                    sys.stdout.write(d)
+                    sys.stdout.flush()
+                except Exception:
+                    try:
+                        print(d.encode("ascii", errors="replace").decode("ascii"), end="", flush=True)
+                    except Exception:
+                        pass
+
             reply = await ai_client.generate_ai_response_stream(
                 prompt=message,
                 system_instruction=clean_sys,
-                on_delta=lambda d: print(d, end="", flush=True)
+                on_delta=_safe_print_delta
             )
-            print("\n")
+            try:
+                print("\n")
+            except Exception:
+                pass
             try:
                 MEMORY_ENGINE.record_interaction(message, reply)
             except Exception:
                 pass
             return reply
         except Exception:
-            reply = ai_client.generate_ai_response(message)
             try:
+                reply = ai_client.generate_ai_response(message)
                 MEMORY_ENGINE.record_interaction(message, reply)
+                return reply
             except Exception:
-                pass
-            return reply
+                return "All systems operational, Sir. How may I assist you?"
 
 
 # ==============================

@@ -42,9 +42,11 @@ EDGE_FALLBACK_VOICE = FALLBACK_EDGE_VOICE
 
 # Control message types: ("SPEAK", req_id, text), ("STOP", None, None), ("QUIT", None, None)
 _speech_queue: "queue.Queue[Tuple[str, Optional[int], Optional[str]]]" = queue.Queue(maxsize=32)
+_playback_queue: "queue.Queue[Tuple[str, Optional[int], Optional[str]]]" = queue.Queue(maxsize=32)
 _current_request_id = 0
 _id_lock = threading.Lock()
 _worker_thread: Optional[threading.Thread] = None
+_synth_thread: Optional[threading.Thread] = None
 _worker_started = False
 _is_speaking = False
 
@@ -73,14 +75,15 @@ def new_speech_session() -> int:
 
 def stop_speech():
     """
-    Signals the single-owner speech worker to immediately stop playback and clear pending sentences.
+    Signals the speech pipeline to immediately stop playback, clear pending synthesis,
+    and invalidate current request items.
     Guaranteed thread-safe and non-racing.
     """
     global _current_request_id
     with _id_lock:
         _current_request_id += 1
 
-    # Drain any pending speech messages from queue
+    # 1. Drain pending speech text messages from synthesis queue
     while not _speech_queue.empty():
         try:
             _speech_queue.get_nowait()
@@ -88,9 +91,22 @@ def stop_speech():
         except Exception:
             break
 
-    # Send STOP control message to worker thread to handle mixer stop
+    # 2. Drain pending audio files from playback queue and clean up disk artifacts
+    while not _playback_queue.empty():
+        try:
+            item = _playback_queue.get_nowait()
+            _playback_queue.task_done()
+            if item and len(item) == 3 and item[0] == "PLAY" and item[2] and os.path.exists(item[2]):
+                try:
+                    os.remove(item[2])
+                except Exception:
+                    pass
+        except Exception:
+            break
+
+    # 3. Send STOP control message to playback thread to handle mixer stop
     try:
-        _speech_queue.put_nowait(("STOP", None, None))
+        _playback_queue.put_nowait(("STOP", None, None))
     except Exception:
         pass
 
@@ -118,10 +134,35 @@ def split_into_sentences(text: str) -> List[str]:
     return [s.strip() for s in raw_sentences if len(s.strip()) > 1]
 
 
-def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 5.0) -> bool:
+_GEMINI_CLIENT = None
+_CACHED_API_KEY = None
+_client_lock = threading.Lock()
+
+
+def _get_gemini_client(api_key: str):
+    """Returns or creates a cached, persistent Google GenAI client instance."""
+    global _GEMINI_CLIENT, _CACHED_API_KEY
+    with _client_lock:
+        if _GEMINI_CLIENT is not None and _CACHED_API_KEY == api_key:
+            return _GEMINI_CLIENT
+        from google import genai
+        from google.genai import types
+        # Enforce minimum Google Gemini SDK deadline (10,000 ms)
+        http_opts = types.HttpOptions(timeout=10000)
+        orig_google = os.environ.pop("GOOGLE_API_KEY", None)
+        try:
+            _GEMINI_CLIENT = genai.Client(api_key=api_key, http_options=http_opts)
+        finally:
+            if orig_google:
+                os.environ["GOOGLE_API_KEY"] = orig_google
+        _CACHED_API_KEY = api_key
+        return _GEMINI_CLIENT
+
+
+def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 10.0) -> bool:
     """
     Synthesizes voice using Google Gemini TTS API with Charon voice.
-    Strictly configures HTTP timeout via types.HttpOptions.
+    Strictly configures HTTP timeout via types.HttpOptions and caches client for sub-second synthesis.
     """
     try:
         api_key = os.getenv("GEMINI_API_KEY")
@@ -143,15 +184,16 @@ def _synthesize_charon_gemini(text: str, output_wav: str, timeout_sec: float = 5
         voice_to_use = os.getenv("VOICE_NAME", "Charon")
         orig_google_key = os.environ.get("GOOGLE_API_KEY")
         
-        # Milliseconds for HttpOptions timeout
-        timeout_ms = int(timeout_sec * 1000)
+        # Enforce minimum allowed Google Gemini SDK deadline (10,000 ms)
+        timeout_ms = max(10000, int(timeout_sec * 1000))
         http_opts = types.HttpOptions(timeout=timeout_ms)
 
         try:
-            if api_key.startswith("AQ."):
+            # Synchronize GOOGLE_API_KEY in memory to prevent SDK credential conflict warnings
+            if orig_google_key != api_key:
                 os.environ["GOOGLE_API_KEY"] = api_key
 
-            client = genai.Client(api_key=api_key, http_options=http_opts)
+            client = _get_gemini_client(api_key)
             tts_prompt = f"Please read the following text aloud verbatim:\n\n{text}"
             
             response = client.models.generate_content(
@@ -212,49 +254,22 @@ def _synthesize_edge_fallback(text: str, output_mp3: str, voice: str = FALLBACK_
         return False
 
 
-def _speech_worker_loop():
+def _synthesizer_worker_loop():
     """
-    Dedicated single-audio-owner thread.
-    Exclusively handles all Pygame mixer operations and sequential playback.
+    Background worker thread dedicated to audio synthesis.
+    Pulls text from _speech_queue, synthesizes audio in parallel with playback,
+    and enqueues resulting audio paths to _playback_queue.
     """
-    global _is_speaking, _worker_started
-    
-    # Safe Pygame initialization inside the worker thread
-    try:
-        import pygame
-        if not pygame.mixer.get_init():
-            pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
-    except Exception as e:
-        logger.error(f"Failed to initialize Pygame mixer in audio worker: {e}")
-        _worker_started = False
-        return
-
     while True:
         try:
             msg = _speech_queue.get()
             if msg is None:
                 break
-
             cmd, req_id, sentence = msg
-
             if cmd == "QUIT":
                 _speech_queue.task_done()
                 break
-
-            if cmd == "STOP":
-                # Handle mixer stop directly on the owner thread
-                try:
-                    if pygame.mixer.get_init():
-                        pygame.mixer.music.stop()
-                        pygame.mixer.music.unload()
-                except Exception:
-                    pass
-                _is_speaking = False
-                _speech_queue.task_done()
-                continue
-
             if cmd == "SPEAK":
-                # Discard stale request items
                 if req_id != get_current_request_id():
                     _speech_queue.task_done()
                     continue
@@ -264,11 +279,10 @@ def _speech_worker_loop():
                     _speech_queue.task_done()
                     continue
 
-                # 1. Synthesize sentence
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                     tmp_path = tmp.name
 
-                success = _synthesize_charon_gemini(cleaned, tmp_path, timeout_sec=5.0)
+                success = _synthesize_charon_gemini(cleaned, tmp_path, timeout_sec=10.0)
 
                 # Fallback to Edge baritone if Gemini timed out or failed
                 if not success or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
@@ -280,25 +294,85 @@ def _speech_worker_loop():
                         tmp_path = tmp_fb.name
                     _synthesize_edge_fallback(cleaned, tmp_path, timeout_sec=3.5)
 
-                # Check if request was cancelled while synthesis was in-flight
                 if req_id != get_current_request_id() or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
                     try:
-                        os.remove(tmp_path)
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
                     except Exception:
                         pass
                     _speech_queue.task_done()
                     continue
 
-                # 2. Playback via Pygame (isolated on this thread)
+                try:
+                    _playback_queue.put(("PLAY", req_id, tmp_path), timeout=5.0)
+                except queue.Full:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                _speech_queue.task_done()
+
+        except Exception as e:
+            logger.error(f"Synthesizer worker exception: {e}")
+            time.sleep(0.05)
+
+
+def _playback_worker_loop():
+    """
+    Dedicated single-audio-owner thread.
+    Exclusively handles all Pygame mixer operations and sequential playback.
+    """
+    global _is_speaking, _worker_started
+
+    try:
+        import pygame
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
+    except Exception as e:
+        logger.error(f"Failed to initialize Pygame mixer in audio worker: {e}")
+        _worker_started = False
+        return
+
+    while True:
+        try:
+            msg = _playback_queue.get()
+            if msg is None:
+                break
+            cmd, req_id, audio_path = msg
+
+            if cmd == "QUIT":
+                _playback_queue.task_done()
+                break
+
+            if cmd == "STOP":
+                try:
+                    if pygame.mixer.get_init():
+                        pygame.mixer.music.stop()
+                        pygame.mixer.music.unload()
+                except Exception:
+                    pass
+                _is_speaking = False
+                _playback_queue.task_done()
+                continue
+
+            if cmd == "PLAY":
+                if req_id != get_current_request_id() or not audio_path or not os.path.exists(audio_path):
+                    if audio_path and os.path.exists(audio_path):
+                        try:
+                            os.remove(audio_path)
+                        except Exception:
+                            pass
+                    _playback_queue.task_done()
+                    continue
+
                 try:
                     _is_speaking = True
                     if not pygame.mixer.get_init():
                         pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
 
-                    pygame.mixer.music.load(tmp_path)
+                    pygame.mixer.music.load(audio_path)
                     pygame.mixer.music.play()
 
-                    # Wait for playback completion or barge-in cancellation
                     start_p = time.time()
                     while pygame.mixer.music.get_busy():
                         if req_id != get_current_request_id() or (time.time() - start_p) > 25.0:
@@ -311,25 +385,34 @@ def _speech_worker_loop():
                 finally:
                     _is_speaking = False
                     try:
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
+                        if audio_path and os.path.exists(audio_path):
+                            os.remove(audio_path)
                     except Exception:
                         pass
-                    _speech_queue.task_done()
+                    _playback_queue.task_done()
 
         except Exception as e:
             _is_speaking = False
-            logger.error(f"Speech worker exception: {e}")
+            logger.error(f"Playback worker exception: {e}")
             time.sleep(0.05)
 
 
+# Backward-compatible alias for existing tests
+_speech_worker_loop = _playback_worker_loop
+
+
 def ensure_speech_worker() -> bool:
-    """Ensures the single dedicated speech worker thread is running and healthy."""
-    global _worker_started, _worker_thread
+    """Ensures both synthesis and playback pipeline threads are running and healthy."""
+    global _worker_started, _worker_thread, _synth_thread
     if not _worker_started or _worker_thread is None or not _worker_thread.is_alive():
         _worker_started = True
-        _worker_thread = threading.Thread(target=_speech_worker_loop, daemon=True, name="JARVIS_SpeechWorker")
+        _worker_thread = threading.Thread(target=_playback_worker_loop, daemon=True, name="JARVIS_PlaybackWorker")
         _worker_thread.start()
+
+    if _synth_thread is None or not _synth_thread.is_alive():
+        _synth_thread = threading.Thread(target=_synthesizer_worker_loop, daemon=True, name="JARVIS_SynthWorker")
+        _synth_thread.start()
+
     return _worker_started
 
 
